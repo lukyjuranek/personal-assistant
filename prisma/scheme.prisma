@@ -1,0 +1,23 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+model Schedule {
+  id          Int      @id @default(autoincrement())
+  userId      BigInt   // Telegram user ID
+  type        String   // "prompt" or "reminder"
+  frequency   String   // "daily", "weekly", "monthly"
+  dayOfWeek   Int?     // 0-6 for weekly (0=Sunday)
+  dayOfMonth  Int?     // 1-31 for monthly
+  time        String   // "HH:mm" format
+  content     String   // The prompt or reminder message
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  
+  @@index([userId])
+}
