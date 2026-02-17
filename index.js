@@ -2,11 +2,11 @@ import { Telegraf } from 'telegraf';
 import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import Bree from 'bree';
 import dotenv from 'dotenv';
+import { detectScheduleIntent } from './src/utils.js'
+import { getConversation, saveToHistory, clearHistory } from './src/memory.js';
 import { initDB, scheduleDB } from './src/db.js';
-
 dotenv.config();
 
-// Initialize database
 initDB();
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
@@ -19,80 +19,6 @@ const model = new ChatGoogleGenerativeAI({
 
 // Simple conversation history storage (without LangChain memory)
 const conversations = new Map();
-
-function getConversation(userId) {
-  if (!conversations.has(userId)) {
-    conversations.set(userId, []);
-  }
-  return conversations.get(userId);
-}
-
-async function chatWithMemory(userId, message) {
-  const history = getConversation(userId);
-  
-  // Add user message
-  history.push({ role: 'user', content: message });
-  
-  // Get response
-  const response = await model.invoke(history);
-  
-  // Add assistant response
-  history.push({ role: 'assistant', content: response.content });
-  
-  // Keep only last 20 messages
-  if (history.length > 20) {
-    history.splice(0, history.length - 20);
-  }
-  
-  return response.content;
-}
-
-// Detect if user wants to schedule something
-async function detectScheduleIntent(message) {
-  const prompt = `Analyze this message and determine if the user wants to schedule a task or reminder.
-
-Message: "${message}"
-
-Reply ONLY with valid JSON in this exact format (no other text):
-
-{
-  "isSchedule": true/false,
-  "type": "prompt" or "reminder" (prompt = AI generates content, reminder = static message),
-  "frequency": "once" or "daily" or "weekly" or "monthly",
-  "dayOfWeek": 0-6 for weekly (0=Sunday, 1=Monday, etc) or null,
-  "dayOfMonth": 1-31 for monthly or null,
-  "scheduledDate": "YYYY-MM-DD" for one-time tasks or null,
-  "time": "HH:mm" in 24h format,
-  "content": "the task description or reminder text"
-}
-
-Current date: ${new Date().toISOString().split('T')[0]}
-Current time: ${new Date().toTimeString().slice(0, 5)}
-
-Examples:
-"Every Monday at 9am give me weekend ideas" -> {"isSchedule": true, "type": "prompt", "frequency": "weekly", "dayOfWeek": 1, "scheduledDate": null, "time": "09:00", "content": "Give me 5 weekend activity ideas"}
-"Remind me every Sunday at 8pm to submit homework" -> {"isSchedule": true, "type": "reminder", "frequency": "weekly", "dayOfWeek": 0, "scheduledDate": null, "time": "20:00", "content": "Reminder: Submit your homework!"}
-"At 4pm research top 5 things to do in Madrid" -> {"isSchedule": true, "type": "prompt", "frequency": "once", "scheduledDate": "2025-02-16", "time": "16:00", "content": "Research and give me top 5 things to do in Madrid"}
-"Tomorrow at 10am remind me to call mom" -> {"isSchedule": true, "type": "reminder", "frequency": "once", "scheduledDate": "2025-02-17", "time": "10:00", "content": "Reminder: Call mom"}
-"On March 15th at 2pm send me birthday gift ideas" -> {"isSchedule": true, "type": "prompt", "frequency": "once", "scheduledDate": "2025-03-15", "time": "14:00", "content": "Give me birthday gift ideas"}
-"What's the weather like?" -> {"isSchedule": false}
-
-Important: 
-- For "today" use today's date
-- For "tomorrow" use tomorrow's date
-- For specific dates like "March 15th", convert to YYYY-MM-DD format
-- For relative times like "in 2 hours", calculate the actual time
-- If no date specified but says "at 4pm", assume today if time hasn't passed, otherwise tomorrow`;
-
-  const response = await model.invoke(prompt);
-  const jsonMatch = response.content.match(/\{[\s\S]*\}/);
-  
-  if (!jsonMatch) {
-    return { isSchedule: false };
-  }
-  
-  return JSON.parse(jsonMatch[0]);
-}
 
 // Initialize Bree scheduler
 const bree = new Bree({
@@ -164,16 +90,15 @@ bot.on('text', async (ctx) => {
   try {
     const userMessage = ctx.message.text;
     const userId = ctx.from.id.toString();
-    
+    const history = getConversation(userId);
+
     await ctx.sendChatAction('typing');
-    
-    // Check if user wants to schedule something
-    const intent = await detectScheduleIntent(userMessage);
-    
-    if (intent.isSchedule) {
-      // Save schedule to database
+
+    const intent = await detectScheduleIntent(model, userMessage, userId);
+
+    if (intent.intent === 'create_schedule') {
       const schedule = scheduleDB.create({
-        userId: userId,
+        userId,
         type: intent.type,
         frequency: intent.frequency,
         dayOfWeek: intent.dayOfWeek,
@@ -182,7 +107,7 @@ bot.on('text', async (ctx) => {
         time: intent.time,
         content: intent.content
       });
-      
+
       let freqText;
       if (intent.frequency === 'once') {
         freqText = `once on ${intent.scheduledDate}`;
@@ -193,15 +118,101 @@ bot.on('text', async (ctx) => {
       } else {
         freqText = 'daily';
       }
-      
-      await ctx.reply(`✅ Scheduled! I'll ${intent.type === 'prompt' ? 'generate' : 'send'} this ${freqText} at ${intent.time}:\n\n"${intent.content}"\n\nSchedule ID: ${schedule.id}\n\nUse /schedules to view all schedules.`);
-      return;
+
+      const reply = 
+        `✅ Scheduled! I'll ${intent.type === 'prompt' ? 'generate' : 'send'} this ${freqText} at ${intent.time}:\n\n` +
+        `"${intent.content}"\n\n` +
+        `Schedule ID: ${schedule.id}`;
+
+      saveToHistory(userId, userMessage, reply);
+
+      await ctx.reply(reply);
+
+    } else if (intent.intent === 'edit_schedule') {
+      if (!intent.scheduleId) {
+        await ctx.reply('❌ Which schedule? Use /schedules to see your IDs.');
+        return;
+      }
+
+      const updated = scheduleDB.update(intent.scheduleId, userId, intent.updates);
+
+      if (updated) {
+        const s = scheduleDB.findById(intent.scheduleId, userId);
+        let freqText;
+        if (s.frequency === 'once') {
+          freqText = `once on ${s.scheduledDate}`;
+        } else if (s.frequency === 'weekly') {
+          freqText = `every ${['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][s.dayOfWeek]}`;
+        } else if (s.frequency === 'monthly') {
+          freqText = `monthly on day ${s.dayOfMonth}`;
+        } else {
+          freqText = 'daily';
+        }
+
+        const reply = 
+          `✅ Updated!\n\n` +
+          `Frequency: ${freqText}\n` +
+          `Time: ${s.time}\n` +
+          `Content: "${s.content}"`;
+
+        saveToHistory(userId, userMessage, reply);
+
+        await ctx.reply(reply);
+      } else {
+        await ctx.reply('❌ Schedule not found. Use /schedules to see your IDs.');
+      }
+
+    } else if (intent.intent === 'delete_schedule') {
+      if (!intent.scheduleId) {
+        await ctx.reply('❌ Which schedule? Use /schedules to see your IDs.');
+        return;
+      }
+
+      const deleted = scheduleDB.delete(intent.scheduleId, userId);
+      const reply = deleted
+        ? `✅ Schedule #${intent.scheduleId} deleted!`
+        : '❌ Schedule not found.';
+
+      saveToHistory(userId, userMessage, reply);
+
+      await ctx.reply(reply);
+
+    } else if (intent.intent === 'list_schedules') {
+      const schedules = scheduleDB.findByUser(userId);
+
+      if (schedules.length === 0) {
+        await ctx.reply('📅 You have no scheduled tasks.');
+        return;
+      }
+
+      let message = '📅 Your scheduled tasks:\n\n';
+      schedules.forEach((s, i) => {
+        let freqText;
+        if (s.frequency === 'once') freqText = `Once on ${s.scheduledDate}`;
+        else if (s.frequency === 'weekly') freqText = `Every ${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][s.dayOfWeek]}`;
+        else if (s.frequency === 'monthly') freqText = `Monthly on day ${s.dayOfMonth}`;
+        else freqText = 'Daily';
+        message += `${i + 1}. [${s.type}] ${freqText} at ${s.time}\n   "${s.content}"\n   ID: ${s.id}\n\n`;
+      });
+
+      saveToHistory(userId, userMessage, reply);
+
+      await ctx.reply(message);
+
+    } else {
+      // Regular chat
+      const history = getConversation(userId);
+      history.push({ role: 'user', content: userMessage });
+      const response = await model.invoke(history);
+      history.push({ role: 'assistant', content: response.content });
+
+      if (history.length > 20) {
+        history.splice(0, history.length - 20);
+      }
+
+      await ctx.reply(response.content);
     }
-    
-    // Regular conversation with memory
-    const response = await chatWithMemory(userId, userMessage);
-    await ctx.reply(response);
-    
+
   } catch (error) {
     console.error('Error:', error);
     await ctx.reply('Sorry, something went wrong. Please try again.');

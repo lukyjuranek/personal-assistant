@@ -13,6 +13,7 @@
     "@google/generative-ai": "^0.24.1",
     "@langchain/core": "^1.1.24",
     "@langchain/google-genai": "^2.1.18",
+    "bree": "^9.2.8",
     "dotenv": "^17.3.1",
     "langchain": "^1.2.24",
     "telegraf": "^4.16.3"

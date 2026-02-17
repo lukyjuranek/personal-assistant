@@ -80,6 +80,36 @@ export const scheduleDB = {
   getAll: () => {
     const stmt = db.prepare('SELECT * FROM schedules WHERE active = 1');
     return stmt.all();
+  },
+  update: (id, userId, data) => {
+    const fields = [];
+    const values = [];
+
+    if (data.time !== undefined) { fields.push('time = ?'); values.push(data.time); }
+    if (data.content !== undefined) { fields.push('content = ?'); values.push(data.content); }
+    if (data.frequency !== undefined) { fields.push('frequency = ?'); values.push(data.frequency); }
+    if (data.dayOfWeek !== undefined) { fields.push('dayOfWeek = ?'); values.push(data.dayOfWeek); }
+    if (data.dayOfMonth !== undefined) { fields.push('dayOfMonth = ?'); values.push(data.dayOfMonth); }
+    if (data.scheduledDate !== undefined) { fields.push('scheduledDate = ?'); values.push(data.scheduledDate); }
+    if (data.type !== undefined) { fields.push('type = ?'); values.push(data.type); }
+
+    if (fields.length === 0) return false;
+
+    values.push(id, userId);
+
+    const stmt = db.prepare(`
+      UPDATE schedules 
+      SET ${fields.join(', ')}
+      WHERE id = ? AND userId = ? AND active = 1
+    `);
+
+    const result = stmt.run(...values);
+    return result.changes > 0;
+  },
+
+  findById: (id, userId) => {
+    const stmt = db.prepare('SELECT * FROM schedules WHERE id = ? AND userId = ? AND active = 1');
+    return stmt.get(id, userId);
   }
 };
 
