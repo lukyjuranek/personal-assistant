@@ -3,11 +3,12 @@ import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import { StateGraph, Annotation, START, END, messagesStateReducer, MemorySaver } from "@langchain/langgraph";
 import { SystemMessage, HumanMessage, AIMessage, BaseMessage } from "@langchain/core/messages";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
+import { SYSTEM_PROMPT } from "./prompts.ts";
 import Bree from 'bree';
-import { searchTool, getTasksTool, createTaskTool, completeTaskTool } from "./src/tools.ts"
+import { searchTool, getTasksTool, createTaskTool, completeTaskTool, updateTaskTool, getWeatherTool } from "./src/tools.ts"
 import dotenv from 'dotenv';
 import { plannerAgent, responderAgent, contextBuilder, detectScheduleIntent } from './src/agents.ts'
-import { getConversation, saveToHistory, clearHistory } from './src/memory.ts';
+// import { getConversation, saveToHistory, clearHistory } from './src/memory.ts';
 import { initDB, scheduleDB } from './src/db.ts';
 
 dotenv.config();
@@ -21,11 +22,8 @@ const llm = new ChatGoogleGenerativeAI({
   model: 'gemini-2.5-flash',
   temperature: 0.7
 })
-  .bindTools([searchTool]);
+  .bindTools([searchTool, getTasksTool, createTaskTool, updateTaskTool, completeTaskTool, getWeatherTool]);
 
-// Simple conversation history storage (without LangChain memory)
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const conversations: Map<string, any> = new Map();
 
 const GraphState = Annotation.Root({
   messages: Annotation<BaseMessage[], BaseMessage[]>({
@@ -38,9 +36,8 @@ const GraphState = Annotation.Root({
   }),
 });
 
-// If you use an AgentState type elsewhere, make sure it is defined.
 // Type alias for convenience
-// type State = typeof GraphState.State;
+type State = typeof GraphState.State;
 
 async function chatNode(state: { messages: BaseMessage[] }): Promise<{ messages: BaseMessage[] }> {
   const response = await llm.invoke(state.messages);
@@ -55,19 +52,18 @@ async function summarizeNode(state: { messages: BaseMessage[] }): Promise<{ summ
   return { summary: response.content };
 }
 
-// Replace this with actual AgentState import/type if needed
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function agentNode(state: any): Promise<{ messages: BaseMessage[] }> {
-  const response = await llm.invoke(state.messages);
+  const response = await llm.invoke([
+    new SystemMessage(SYSTEM_PROMPT),
+    ...state.messages,
+  ]);
   return { messages: [response] };
 }
 
 // ToolNode automatically runs any tool_calls found in the last AI message
-const toolsNode = new ToolNode([searchTool]);
+const toolsNode = new ToolNode([searchTool, getTasksTool, createTaskTool, updateTaskTool, completeTaskTool, getWeatherTool]);
 
-// Replace this type with actual AgentState type as appropriate
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function shouldContinue(state: any): "tools" | typeof END {
+function shouldContinue(state: State): "tools" | typeof END {
   const last = state.messages.at(-1) as AIMessage;
   if (last?.tool_calls && last.tool_calls.length > 0) return "tools";
   return END;
@@ -81,7 +77,10 @@ const persistentGraph = new StateGraph(GraphState)
   .addEdge(START, "agent")
   .addConditionalEdges("agent", shouldContinue)
   .addEdge("tools", "agent")
-  .compile({ checkpointer: memory }); // <-- attach the checkpointer here
+  .compile({
+    checkpointer: memory,
+    // interruptBefore: ["tools"], // pause BEFORE the "tools" node every time}); // <-- attach the checkpointer here
+  });
 
 
 // Each call with the same thread_id continues where it left off:
@@ -106,30 +105,27 @@ const persistentGraph = new StateGraph(GraphState)
 //   ]
 // });
 
-// 'ctx' has type 'TelegrafContext' (or Context from telegraf).
 bot.on('text', async (ctx: TelegrafContext) => {
   try {
     const userMessage: string = ctx.message.text || "";
-    const userId: string = ctx.from.id.toString();
-    const history = getConversation(userId);
+    // const userId: string = ctx.from.id.toString();
+    // const history = getConversation(userId);
 
     await ctx.sendChatAction('typing');
 
     // Langgraph
-    const result = await persistentGraph.invoke({
-      messages: [new HumanMessage(userMessage)],
-    });
+    const result = await persistentGraph.invoke(
+      { messages: [new HumanMessage(userMessage)] },
+      { configurable: { thread_id: "session-1" } }
+    );
 
-    const lastMessage = result.messages.at(-1) as BaseMessage;
-    await ctx.reply(lastMessage.content as string);
+    const finalMessage = [...result.messages]
+      .reverse()
+      .find(m => m._getType() === "ai" && typeof m.content === "string");
+
+    await ctx.reply(finalMessage?.content as string ?? "Something went wrong");
+    console.log(result.messages.map(m => ({ type: m._getType(), content: JSON.stringify(m.content) })));
     return;
-
-    // Langchain
-    // const context = await contextBuilder(userId);
-    // const plan = await plannerAgent(llm, userMessage, context, userId);
-    // const response = await responderAgent(llm, plan);
-    // await ctx.reply(response)
-    // return;
 
   } catch (error) {
     console.error('Error:', error);

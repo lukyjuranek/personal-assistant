@@ -2,24 +2,53 @@
 import { z } from "zod";
 import { tool } from "@langchain/core/tools";
 import { Database } from "bun:sqlite";
+// import { TavilySearchResults } from "@langchain/community/tools/tavily_search";
+import { TavilySearch } from "@langchain/tavily";
 
 const db = new Database("./data/tasks.db");
 
+db.run(`
+  CREATE TABLE IF NOT EXISTS tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    dueDate TEXT,
+    priority TEXT DEFAULT 'medium',
+    status TEXT DEFAULT 'pending'
+  )
+`);
 
 
+export const searchTool = new TavilySearch({
+  maxResults: 5,
+});
 
-export const searchTool = tool(
-  async ({ query }: { query: string }) => {
-    // In reality, you'd hit a real API here
-    return `Search results for "${query}": lots of info found.`;
+export const getWeatherTool = tool(
+  async ({ city }) => {
+    // Step 1: geocode city to lat/lon
+    const geoRes = await fetch(
+      `http://api.openweathermap.org/geo/1.0/direct?q=${city}&limit=1&appid=${process.env.OPENWEATHER_API_KEY}`
+    );
+    const geoData = await geoRes.json();
+    if (!geoData.length) return `Could not find location for "${city}"`;
+
+    const { lat, lon } = geoData[0];
+
+    // Step 2: get weather using lat/lon
+    const weatherRes = await fetch(
+      `https://api.openweathermap.org/data/3.0/onecall?lat=${lat}&lon=${lon}&exclude=minutely,hourly,daily,alerts&units=metric&appid=${process.env.OPENWEATHER_API_KEY}`
+    );
+    const data = await weatherRes.json();
+
+    return `Weather in ${city}: ${data.current.weather[0].description}, ${data.current.temp}°C, feels like ${data.current.feels_like}°C, humidity ${data.current.humidity}%`;
   },
   {
-    name: "search",
-    description: "Search the web for information",
-    schema: z.object({ query: z.string().describe("Search query") }),
+    name: "get_weather",
+    description: "Get the current weather for a city",
+    schema: z.object({
+      city: z.string().describe("The city name e.g. London, Tokyo"),
+    }),
   }
 );
-
 
 export const createTaskTool = tool(
   async ({ title, dueDate, priority }) => {
@@ -62,6 +91,31 @@ export const completeTaskTool = tool(
     description: "Mark a task as complete",
     schema: z.object({
       taskId: z.string().describe("The ID of the task to complete"),
+    }),
+  }
+);
+
+export const updateTaskTool = tool(
+  async ({ taskId, title, dueDate, priority, status }) => {
+    const updated = await db.update(taskId, {
+      ...(title && { title }),
+      ...(dueDate && { dueDate }),
+      ...(priority && { priority }),
+      ...(status && { status }),
+    });
+
+    if (!updated) return `Task ${taskId} not found`;
+    return `Task ${taskId} updated successfully`;
+  },
+  {
+    name: "update_task",
+    description: "Update an existing task. Can change the title, due date, priority, or status.",
+    schema: z.object({
+      taskId: z.string().describe("The ID of the task to update"),
+      title: z.string().optional().describe("New title for the task"),
+      dueDate: z.string().optional().describe("New due date in ISO format e.g. 2025-05-03"),
+      priority: z.enum(["low", "medium", "high"]).optional().describe("New priority"),
+      status: z.enum(["pending", "done"]).optional().describe("New status"),
     }),
   }
 );
