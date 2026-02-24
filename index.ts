@@ -133,6 +133,43 @@ bot.on('text', async (ctx: TelegrafContext) => {
   }
 });
 
+bot.on("photo", async (ctx) => {
+  const photo = ctx.message.photo.at(-1);
+  const file = await ctx.telegram.getFile(photo.file_id);
+  const url = `https://api.telegram.org/file/bot${bot.token}/${file.file_path}`;
+
+  // download and convert to base64
+  const res = await fetch(url);
+  const buffer = await res.arrayBuffer();
+  const base64 = Buffer.from(buffer).toString("base64");
+  const mimeType = file.file_path?.endsWith(".png") ? "image/png" : "image/jpeg";
+
+  const userMessage = ctx.message.caption ?? "What's in this image?";
+  const result = await persistentGraph.invoke(
+    {
+      messages: [
+        new HumanMessage({
+          content: [
+            {
+              type: "image_url",
+              image_url: `data:${mimeType};base64,${base64}`,
+            },
+            { type: "text", text: userMessage },
+          ],
+        }),
+      ],
+    },
+    { configurable: { thread_id: "session-1" } }
+  );
+
+  const last = result.messages.at(-1);
+  const content = typeof last.content === "string"
+    ? last.content
+    : last.content.map((b: any) => b.text ?? "").join("");
+
+  await ctx.reply(content);
+});
+
 // Start bot and scheduler
 async function start(): Promise<void> {
   // await bree.start();

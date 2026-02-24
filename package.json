@@ -13,7 +13,7 @@
     "@google/generative-ai": "^0.24.1",
     "@langchain/community": "^1.1.17",
     "@langchain/core": "^1.1.24",
-    "@langchain/google-genai": "^2.1.18",
+    "@langchain/google-genai": "^2.1.20",
     "@langchain/langgraph": "^1.1.5",
     "@langchain/tavily": "^1.2.0",
     "bree": "^9.2.8",

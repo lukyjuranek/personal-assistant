@@ -29,7 +29,9 @@ export const getWeatherTool = tool(
       `http://api.openweathermap.org/geo/1.0/direct?q=${city}&limit=1&appid=${process.env.OPENWEATHER_API_KEY}`
     );
     const geoData = await geoRes.json();
-    if (!geoData.length) return `Could not find location for "${city}"`;
+    if (!Array.isArray(geoData) || geoData.length === 0) {
+      return `Could not find location for "${city}"`;
+    }
 
     const { lat, lon } = geoData[0];
 
