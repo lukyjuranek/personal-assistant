@@ -20,9 +20,9 @@ const bot: Telegraf<TelegrafContext> = new Telegraf(process.env.TELEGRAM_BOT_TOK
 const llm = new ChatGoogleGenerativeAI({
   apiKey: process.env.GEMINI_API_KEY as string,
   model: 'gemini-2.5-flash',
-  temperature: 0.7
-})
-  .bindTools([searchTool, getTasksTool, createTaskTool, updateTaskTool, completeTaskTool, getWeatherTool]);
+  temperature: 0.7,
+  thinking_budget: -1 //-1 automatically decides, 0 — no thinking. 1024 — light reasoning, good for simple tasks. 8192 — solid reasoning for most things 24576 — maximum, for really complex problems
+}).bindTools([searchTool, getTasksTool, createTaskTool, updateTaskTool, completeTaskTool, getWeatherTool]);
 
 
 const GraphState = Annotation.Root({
