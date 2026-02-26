@@ -18,7 +18,9 @@
     "@langchain/tavily": "^1.2.0",
     "bree": "^9.2.8",
     "dotenv": "^17.3.1",
+    "googleapis": "^171.4.0",
     "langchain": "^1.2.24",
+    "node-cron": "^4.2.1",
     "telegraf": "^4.16.3",
     "zod": "^4.3.6"
   }

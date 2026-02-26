@@ -36,6 +36,13 @@ export interface ScheduleUpdate {
   type?: string;
 }
 
+export interface UserRow {
+  userId: string;
+  chatId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 if (!existsSync("./data")) {
   mkdirSync("./data", { recursive: true });
 }
@@ -56,6 +63,15 @@ export function initDB(): void {
       content TEXT NOT NULL,
       active INTEGER DEFAULT 1,
       createdAt TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      userId TEXT PRIMARY KEY,
+      chatId TEXT NOT NULL,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      updatedAt TEXT DEFAULT CURRENT_TIMESTAMP
     )
   `);
 
@@ -179,6 +195,35 @@ export const scheduleDB = {
       "SELECT * FROM schedules WHERE id = ? AND userId = ? AND active = 1"
     );
     return stmt.get(id, userId) as ScheduleRow | undefined;
+  },
+};
+
+export const userDB = {
+  upsert: (userId: string, chatId: string): void => {
+    const stmt = db.prepare(`
+      INSERT INTO users (userId, chatId, createdAt, updatedAt)
+      VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      ON CONFLICT(userId) DO UPDATE SET 
+        chatId = excluded.chatId,
+        updatedAt = CURRENT_TIMESTAMP
+    `);
+    stmt.run(userId, chatId);
+  },
+
+  get: (userId: string): UserRow | undefined => {
+    const stmt = db.prepare("SELECT * FROM users WHERE userId = ?");
+    return stmt.get(userId) as UserRow | undefined;
+  },
+
+  getChatId: (userId: string): string | undefined => {
+    const stmt = db.prepare("SELECT chatId FROM users WHERE userId = ?");
+    const result = stmt.get(userId) as { chatId: string } | undefined;
+    return result?.chatId;
+  },
+
+  getAll: (): UserRow[] => {
+    const stmt = db.prepare("SELECT * FROM users");
+    return stmt.all() as UserRow[];
   },
 };
 

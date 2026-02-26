@@ -4,6 +4,7 @@ import { tool } from "@langchain/core/tools";
 import { Database } from "bun:sqlite";
 // import { TavilySearchResults } from "@langchain/community/tools/tavily_search";
 import { TavilySearch } from "@langchain/tavily";
+import { googleCalendarService } from "./google-calendar";
 
 const db = new Database("./data/tasks.db");
 
@@ -28,7 +29,7 @@ export const getWeatherTool = tool(
     const geoRes = await fetch(
       `http://api.openweathermap.org/geo/1.0/direct?q=${city}&limit=1&appid=${process.env.OPENWEATHER_API_KEY}`
     );
-    const geoData = await geoRes.json();
+    const geoData = await geoRes.json() as any[];
     if (!Array.isArray(geoData) || geoData.length === 0) {
       return `Could not find location for "${city}"`;
     }
@@ -39,7 +40,7 @@ export const getWeatherTool = tool(
     const weatherRes = await fetch(
       `https://api.openweathermap.org/data/3.0/onecall?lat=${lat}&lon=${lon}&exclude=minutely,hourly,daily,alerts&units=metric&appid=${process.env.OPENWEATHER_API_KEY}`
     );
-    const data = await weatherRes.json();
+    const data = await weatherRes.json() as any;
 
     return `Weather in ${city}: ${data.current.weather[0].description}, ${data.current.temp}°C, feels like ${data.current.feels_like}°C, humidity ${data.current.humidity}%`;
   },
@@ -99,14 +100,37 @@ export const completeTaskTool = tool(
 
 export const updateTaskTool = tool(
   async ({ taskId, title, dueDate, priority, status }) => {
-    const updated = await db.update(taskId, {
-      ...(title && { title }),
-      ...(dueDate && { dueDate }),
-      ...(priority && { priority }),
-      ...(status && { status }),
-    });
-
-    if (!updated) return `Task ${taskId} not found`;
+    let query = 'UPDATE tasks SET ';
+    const updates: string[] = [];
+    const values: any[] = [];
+    
+    if (title) {
+      updates.push('title = ?');
+      values.push(title);
+    }
+    if (dueDate) {
+      updates.push('dueDate = ?');
+      values.push(dueDate);
+    }
+    if (priority) {
+      updates.push('priority = ?');
+      values.push(priority);
+    }
+    if (status) {
+      updates.push('status = ?');
+      values.push(status);
+    }
+    
+    if (updates.length === 0) {
+      return `No updates provided for task ${taskId}`;
+    }
+    
+    query += updates.join(', ') + ' WHERE id = ?';
+    values.push(taskId);
+    
+    const result = db.prepare(query).run(...values);
+    
+    if (result.changes === 0) return `Task ${taskId} not found`;
     return `Task ${taskId} updated successfully`;
   },
   {
@@ -121,3 +145,92 @@ export const updateTaskTool = tool(
     }),
   }
 );
+
+// Google Calendar Tools
+export const listCalendarEventsTool = tool(
+  async ({ userId, maxResults }) => {
+    return await googleCalendarService.listEvents(userId, maxResults);
+  },
+  {
+    name: "list_calendar_events",
+    description: "List upcoming events from user's Google Calendar",
+    schema: z.object({
+      userId: z.string().describe("The user's ID"),
+      maxResults: z.number().optional().default(10).describe("Maximum number of events to return"),
+    }),
+  }
+);
+
+export const createCalendarEventTool = tool(
+  async ({ userId, summary, startTime, endTime, description, location }) => {
+    return await googleCalendarService.createEvent(
+      userId,
+      summary,
+      startTime,
+      endTime,
+      description,
+      location
+    );
+  },
+  {
+    name: "create_calendar_event",
+    description: "Create a new event in user's Google Calendar",
+    schema: z.object({
+      userId: z.string().describe("The user's ID"),
+      summary: z.string().describe("Event title/summary"),
+      startTime: z.string().describe("Start time in ISO 8601 format (e.g., 2026-03-15T10:00:00Z)"),
+      endTime: z.string().describe("End time in ISO 8601 format (e.g., 2026-03-15T11:00:00Z)"),
+      description: z.string().optional().describe("Event description"),
+      location: z.string().optional().describe("Event location"),
+    }),
+  }
+);
+
+export const searchCalendarEventsTool = tool(
+  async ({ userId, query }) => {
+    return await googleCalendarService.searchEvents(userId, query);
+  },
+  {
+    name: "search_calendar_events",
+    description: "Search for events in user's Google Calendar by keyword",
+    schema: z.object({
+      userId: z.string().describe("The user's ID"),
+      query: z.string().describe("Search query to find events"),
+    }),
+  }
+);
+
+export const getFreeBusyTool = tool(
+  async ({ userId, timeMin, timeMax }) => {
+    return await googleCalendarService.getFreeBusy(userId, timeMin, timeMax);
+  },
+  {
+    name: "get_free_busy",
+    description: "Get free/busy information for user's calendar within a time range",
+    schema: z.object({
+      userId: z.string().describe("The user's ID"),
+      timeMin: z.string().describe("Start of time range in ISO 8601 format"),
+      timeMax: z.string().describe("End of time range in ISO 8601 format"),
+    }),
+  }
+);
+
+export const checkCalendarAuthTool = tool(
+  async ({ userId }) => {
+    const isAuth = await googleCalendarService.isAuthorized(userId);
+    if (isAuth) {
+      return "User is authorized to access Google Calendar";
+    } else {
+      const authUrl = googleCalendarService.getAuthUrl(userId);
+      return `User needs to authorize Google Calendar. Please visit: ${authUrl}`;
+    }
+  },
+  {
+    name: "check_calendar_auth",
+    description: "Check if user has authorized Google Calendar access and get auth URL if not",
+    schema: z.object({
+      userId: z.string().describe("The user's ID"),
+    }),
+  }
+);
+
